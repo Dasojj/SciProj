@@ -4,7 +4,7 @@ import os
 import openpyxl
 import random
 
-bot = telebot.TeleBot('7179760881:AAEXuaVcaM1NGrDyOL4ZzfmWARNmPIEn8YQ')
+bot = telebot.TeleBot('token')
 
 user_state = {}
 admin_codes = []
