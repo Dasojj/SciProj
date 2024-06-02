@@ -64,7 +64,7 @@ def update_variant(group, name, variant):
         return False
     else:
         return False
-    
+
 def group_exists(group):
     excel_file = os.path.join("groups", group + ".xlsx")
     return os.path.exists(excel_file)
@@ -89,13 +89,13 @@ def start_message(message, edit=False):
     else:
         btn_variants = types.InlineKeyboardButton(text="Вариант", callback_data="variants")
         btn_materials = types.InlineKeyboardButton(text="Материалы", callback_data="materials")
-        keyboard.add(btn_variants, btn_materials)
+        btn_submission = types.InlineKeyboardButton(text="Сдача", callback_data="submission")
+        keyboard.add(btn_variants, btn_materials, btn_submission)
         msg_text = "Выберите один из вариантов:"
         if edit:
             bot.edit_message_text(chat_id=chat_id, message_id=message.message_id, text=msg_text, reply_markup=keyboard)
         else:
             bot.send_message(chat_id, msg_text, reply_markup=keyboard)
-
 
 @bot.message_handler(commands=['start'])
 def handle_start(message):
@@ -118,7 +118,6 @@ def handle_exit_admin(message):
     else:
         bot.send_message(chat_id, "Вы не находитесь в админ-режиме.")
 
-
 def process_admin_code(message):
     chat_id = message.chat.id
     code = message.text.strip()
@@ -133,7 +132,6 @@ def process_admin_code(message):
     else:
         bot.send_message(chat_id, "Неверный админ-код.")
         start_message(message)
-
 
 @bot.callback_query_handler(func=lambda call: True)
 def handle_buttons(call):
@@ -164,6 +162,9 @@ def handle_buttons(call):
         btn8 = types.InlineKeyboardButton(text="Вариация произвольных постоянных", callback_data="Пособие_8")
         keyboard.add(btn1, btn2, btn3, btn4, btn5, btn6, btn7, btn8)
         bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="Выберите тему:", reply_markup=keyboard)
+    elif call.data == "submission":
+        bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="Введите номер задачи (от 1 до 15):")
+        bot.register_next_step_handler(call.message, process_task_number)
     else:
         bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="Немного подождите")
         if(call.data == "Пособие_1"):
@@ -185,7 +186,54 @@ def handle_buttons(call):
         send_pdf(chat_id, manuals_folder, pdf_name)
         bot.delete_message(chat_id, message_id)
         start_message(call.message)
+
+def process_task_number(message):
+    chat_id = message.chat.id
+    try:
+        task_number = int(message.text.strip())
+        if 1 <= task_number <= 15:
+            user_state[chat_id]["task_number"] = task_number
+            msg = bot.send_message(chat_id, "Отправьте файл с решением задачи:")
+            bot.register_next_step_handler(msg, process_task_file)
+        else:
+            msg = bot.send_message(chat_id, "Неверный номер задачи. Пожалуйста, введите номер от 1 до 15:")
+            bot.register_next_step_handler(msg, process_task_number)
+    except ValueError:
+        msg = bot.send_message(chat_id, "Неверный формат. Пожалуйста, введите номер от 1 до 15:")
+        bot.register_next_step_handler(msg, process_task_number)
+
+def process_task_file(message):
+    chat_id = message.chat.id
+    if message.content_type == 'document':
+        task_number = user_state[chat_id]["task_number"]
+        group = user_state[chat_id]["group"]
+        name = user_state[chat_id]["name"]
+
+        file_info = bot.get_file(message.document.file_id)
+        downloaded_file = bot.download_file(file_info.file_path)
+        file_path = os.path.join("submissions", f"{group}_{name}_task_{task_number}.pdf")
         
+        with open(file_path, 'wb') as new_file:
+            new_file.write(downloaded_file)
+
+        excel_file = os.path.join("groups", group + ".xlsx")
+        if os.path.exists(excel_file):
+            wb = openpyxl.load_workbook(excel_file)
+            sheet = wb.active
+            for row in sheet.iter_rows(min_row=2):
+                if row[0].value == name:
+                    cell = row[task_number + 1]
+                    cell.value = "-"
+                    pale_orange_fill = openpyxl.styles.PatternFill(start_color="FFDAB9", end_color="FFDAB9", fill_type="solid")
+                    cell.fill = pale_orange_fill
+                    wb.save(excel_file)
+                    break
+
+        bot.send_message(chat_id, "Файл успешно загружен и отмечен в таблице.")
+        start_message(message)
+    else:
+        msg = bot.send_message(chat_id, "Неверный формат файла. Пожалуйста, отправьте файл с решением задачи:")
+        bot.register_next_step_handler(msg, process_task_file)
 
 def process_group_step(message):
     chat_id = message.chat.id
@@ -202,11 +250,11 @@ def process_name_step(message):
     chat_id = message.chat.id
     group = user_state[chat_id]["group"]
     name = message.text.strip()
-    
+
     if name_exists_in_group(group, name):
         user_state[chat_id]["name"] = name
         save_user_state()
-        
+
         excel_file = os.path.join("groups", group + ".xlsx")
         if os.path.exists(excel_file):
             wb = openpyxl.load_workbook(excel_file)
@@ -214,15 +262,15 @@ def process_name_step(message):
             assigned_variants = [row[1].value for row in sheet.iter_rows(min_row=2) if row[1].value is not None]
         else:
             assigned_variants = []
-        
+
         if len(set(assigned_variants)) < 20:
             available_variants = [i for i in range(1, 21) if assigned_variants.count(i) < 1]
         else:
             available_variants = [i for i in range(1, 21) if assigned_variants.count(i) < 2]
-        
+
         variant = random.choice(available_variants)
         update_variant(group, name, variant)
-        
+
         pdf_name = f"Вариант_{variant}.pdf"
         send_pdf(chat_id, variants_folder, pdf_name)
         start_message(message)
@@ -230,7 +278,6 @@ def process_name_step(message):
         msg = bot.send_message(chat_id, "ФИО не найдено в группе. Пожалуйста, введите правильное ФИО:")
         bot.register_next_step_handler(msg, process_name_step)
 
-    
 def process_group_download(message):
     chat_id = message.chat.id
     group_name = message.text.strip()
@@ -243,7 +290,7 @@ def process_group_download(message):
         else:
             bot.send_message(chat_id, "Файл для данной группы не найден.")
         start_message(message)
-    
+
 load_user_state()
 load_admin_codes()
 bot.polling(none_stop=True)
