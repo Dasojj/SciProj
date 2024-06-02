@@ -3,14 +3,18 @@ from telebot import types
 import os
 import openpyxl
 import random
+import re
 
-bot = telebot.TeleBot('token')
+bot = telebot.TeleBot('7179760881:AAEXuaVcaM1NGrDyOL4ZzfmWARNmPIEn8YQ')
 
+current_selection = {}
 user_state = {}
 admin_codes = []
 
 manuals_folder = "manuals"
 variants_folder = "variants"
+submissions_folder = "submissions"
+checked_folder = "checked"
 state_file = "user_state.conf"
 admin_codes_file = "admin_codes.txt"
 
@@ -64,7 +68,7 @@ def update_variant(group, name, variant):
         return False
     else:
         return False
-
+    
 def group_exists(group):
     excel_file = os.path.join("groups", group + ".xlsx")
     return os.path.exists(excel_file)
@@ -83,9 +87,11 @@ def start_message(message, edit=False):
     chat_id = message.chat.id
     keyboard = types.InlineKeyboardMarkup(row_width=2)
     if chat_id in user_state and user_state[chat_id].get("admin"):
-        msg_text = "Введите название группы для скачивания таблицы:"
-        bot.send_message(chat_id, msg_text)
-        bot.register_next_step_handler_by_chat_id(chat_id, process_group_download)
+        btn_tables = types.InlineKeyboardButton(text="Таблицы", callback_data="tables")
+        btn_check = types.InlineKeyboardButton(text="Проверка", callback_data="check")
+        keyboard.add(btn_tables, btn_check)
+        msg_text = "Выберите действие:"
+        bot.send_message(chat_id, msg_text, reply_markup=keyboard)
     else:
         btn_variants = types.InlineKeyboardButton(text="Вариант", callback_data="variants")
         btn_materials = types.InlineKeyboardButton(text="Материалы", callback_data="materials")
@@ -123,8 +129,9 @@ def process_admin_code(message):
     code = message.text.strip()
     if code in admin_codes:
         user_state[chat_id] = user_state.get(chat_id, {})
-        user_state[chat_id]["group"] = " "
-        user_state[chat_id]["name"] = " "
+        if (not user_state[chat_id]["group"]) or (not user_state[chat_id]["name"]):
+            user_state[chat_id]["group"] = " "
+            user_state[chat_id]["name"] = " "
         user_state[chat_id]["admin"] = True
         save_user_state()
         bot.send_message(chat_id, "Админ-режим активирован.")
@@ -165,27 +172,60 @@ def handle_buttons(call):
     elif call.data == "submission":
         bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="Введите номер задачи (от 1 до 15):")
         bot.register_next_step_handler(call.message, process_task_number)
+    elif call.data == "tables":
+        bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="Введите название группы для скачивания таблицы:")
+        bot.register_next_step_handler(call.message, process_group_download)
+    elif call.data == "check":
+        process_check_groups(call.message)
+    elif call.data.startswith("group_"):
+        group_name = call.data.split("_")[1]
+        process_check_students(call.message, group_name)
+    elif call.data.startswith("student_"):
+        student_name = call.data.split("_")[1]
+        process_check_tasks(call.message, student_name)
+    elif call.data.startswith("task_"):
+        task_number = call.data.split("_")[1]
+        process_send_task(call.message, task_number)
+    elif call.data.startswith("pass_"):
+        task_number = call.data.split("_")[1]
+        group_name = current_selection[chat_id]['group']
+        student_name = current_selection[chat_id]['student']
+        update_task_status(group_name, student_name, task_number, 1)
+        bot.send_message(chat_id, "Задача зачтена.")
+        notify_student(group_name, student_name, task_number, "Зачёт")
+        move_submission_to_checked(group_name, student_name, task_number)
+        start_message(call.message)
+    elif call.data.startswith("fail_"):
+        task_number = call.data.split("_")[1]
+        group_name = current_selection[chat_id]['group']
+        student_name = current_selection[chat_id]['student']
+        update_task_status(group_name, student_name, task_number, 0)
+        bot.send_message(chat_id, "Задача не зачтена.")
+        notify_student(group_name, student_name, task_number, "Незачёт")
+        move_submission_to_checked(group_name, student_name, task_number)
+        start_message(call.message)
     else:
         bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="Немного подождите")
-        if(call.data == "Пособие_1"):
+        if call.data == "Пособие_1":
             pdf_name = "С_разделяющимися_переменными.pdf"
-        elif(call.data == "Пособие_2"):
+        elif call.data == "Пособие_2":
             pdf_name = "Однородные_уравнения.pdf"
-        elif(call.data == "Пособие_3"):
+        elif call.data == "Пособие_3":
             pdf_name = "Линейные_уравнения_первого_порядка.pdf"
-        elif(call.data == "Пособие_4"):
+        elif call.data == "Пособие_4":
             pdf_name = "Уравнения_в_полных_дифференциалах.pdf"
-        elif(call.data == "Пособие_5"):
+        elif call.data == "Пособие_5":
             pdf_name = "Допускающие_понижение_порядка.pdf"
-        elif(call.data == "Пособие_6"):
+        elif call.data == "Пособие_6":
             pdf_name = "Однородные_относительно_искомой_функции.pdf"
-        elif(call.data == "Пособие_7"):
+        elif call.data == "Пособие_7":
             pdf_name = "Со_специальной_правой_частью.pdf"
-        elif(call.data == "Пособие_8"):
+        elif call.data == "Пособие_8":
             pdf_name = "Вариация_произвольных_постоянных.pdf"
         send_pdf(chat_id, manuals_folder, pdf_name)
         bot.delete_message(chat_id, message_id)
         start_message(call.message)
+
 
 def process_task_number(message):
     chat_id = message.chat.id
@@ -235,6 +275,7 @@ def process_task_file(message):
         msg = bot.send_message(chat_id, "Неверный формат файла. Пожалуйста, отправьте файл с решением задачи:")
         bot.register_next_step_handler(msg, process_task_file)
 
+
 def process_group_step(message):
     chat_id = message.chat.id
     group = message.text.strip()
@@ -250,11 +291,11 @@ def process_name_step(message):
     chat_id = message.chat.id
     group = user_state[chat_id]["group"]
     name = message.text.strip()
-
+    
     if name_exists_in_group(group, name):
         user_state[chat_id]["name"] = name
         save_user_state()
-
+        
         excel_file = os.path.join("groups", group + ".xlsx")
         if os.path.exists(excel_file):
             wb = openpyxl.load_workbook(excel_file)
@@ -262,15 +303,15 @@ def process_name_step(message):
             assigned_variants = [row[1].value for row in sheet.iter_rows(min_row=2) if row[1].value is not None]
         else:
             assigned_variants = []
-
+        
         if len(set(assigned_variants)) < 20:
             available_variants = [i for i in range(1, 21) if assigned_variants.count(i) < 1]
         else:
             available_variants = [i for i in range(1, 21) if assigned_variants.count(i) < 2]
-
+        
         variant = random.choice(available_variants)
         update_variant(group, name, variant)
-
+        
         pdf_name = f"Вариант_{variant}.pdf"
         send_pdf(chat_id, variants_folder, pdf_name)
         start_message(message)
@@ -281,7 +322,7 @@ def process_name_step(message):
 def process_group_download(message):
     chat_id = message.chat.id
     group_name = message.text.strip()
-    if(group_name == "/exit_admin"):
+    if group_name == "/exit_admin":
         handle_exit_admin(message)
     else:
         excel_file = os.path.join("groups", group_name + ".xlsx")
@@ -290,6 +331,115 @@ def process_group_download(message):
         else:
             bot.send_message(chat_id, "Файл для данной группы не найден.")
         start_message(message)
+
+def process_check_groups(message):
+    groups = {}
+    for filename in os.listdir(submissions_folder):
+        match = re.match(r'([\w-]+)_([\w\s]+)_task_(\d+)\.pdf', filename, re.UNICODE)
+        if match:
+            group, student, task = match.groups()
+            if group not in groups:
+                groups[group] = set()
+            groups[group].add(student)
+
+    if groups:
+        keyboard = types.InlineKeyboardMarkup(row_width=1)
+        for group in groups.keys():
+            keyboard.add(types.InlineKeyboardButton(text=group, callback_data=f"group_{group}"))
+        bot.send_message(message.chat.id, "Выберите группу:", reply_markup=keyboard)
+    else:
+        bot.send_message(message.chat.id, "Нет новых задач для проверки.")
+        start_message(message)
+
+def process_check_students(message, group_name):
+    chat_id = message.chat.id
+    students = set()
+    for filename in os.listdir(submissions_folder):
+        match = re.match(rf'{group_name}_([\w\s]+)_task_(\d+)\.pdf', filename, re.UNICODE)
+        if match:
+            student = match.groups()[0]
+            students.add(student)
+    
+    if students:
+        current_selection[chat_id] = {'group': group_name}
+        keyboard = types.InlineKeyboardMarkup(row_width=1)
+        for student in students:
+            keyboard.add(types.InlineKeyboardButton(text=student, callback_data=f"student_{student}"))
+        bot.send_message(message.chat.id, "Выберите студента:", reply_markup=keyboard)
+    else:
+        bot.send_message(message.chat.id, "Нет новых задач для проверки у этой группы.")
+        start_message(message)
+
+def process_check_tasks(message, student_name):
+    chat_id = message.chat.id
+    group_name = current_selection[chat_id]['group']
+    tasks = set()
+    for filename in os.listdir(submissions_folder):
+        match = re.match(rf'{group_name}_{student_name}_task_(\d+)\.pdf', filename, re.UNICODE)
+        if match:
+            task = match.groups()[0]
+            tasks.add(task)
+    
+    if tasks:
+        current_selection[chat_id]['student'] = student_name
+        keyboard = types.InlineKeyboardMarkup(row_width=1)
+        for task in tasks:
+            keyboard.add(types.InlineKeyboardButton(text=f"Задача {task}", callback_data=f"task_{task}"))
+        bot.send_message(message.chat.id, "Выберите задачу:", reply_markup=keyboard)
+    else:
+        bot.send_message(message.chat.id, "Нет новых задач для проверки у этого студента.")
+        start_message(message)
+
+def process_send_task(message, task_number):
+    chat_id = message.chat.id
+    group_name = current_selection[chat_id]['group']
+    student_name = current_selection[chat_id]['student']
+    file_name = f"{group_name}_{student_name}_task_{task_number}.pdf"
+    file_path = os.path.join(submissions_folder, file_name)
+    with open(file_path, 'rb') as f:
+        bot.send_document(message.chat.id, f)
+    
+    keyboard = types.InlineKeyboardMarkup(row_width=2)
+    btn_pass = types.InlineKeyboardButton(text="Зачёт", callback_data=f"pass_{task_number}")
+    btn_fail = types.InlineKeyboardButton(text="Незачёт", callback_data=f"fail_{task_number}")
+    keyboard.add(btn_pass, btn_fail)
+    bot.send_message(message.chat.id, "Поставить зачёт или незачёт?", reply_markup=keyboard)
+
+def update_task_status(group, name, task_number, status):
+    excel_file = os.path.join("groups", group + ".xlsx")
+    if os.path.exists(excel_file):
+        wb = openpyxl.load_workbook(excel_file)
+        sheet = wb.active
+        for row in sheet.iter_rows(min_row=2):
+            if row[0].value == name:
+                cell = row[int(task_number) + 1]
+                cell.value = status
+                pale_orange_fill = openpyxl.styles.PatternFill(start_color="FFDAB9", end_color="FFDAB9", fill_type="solid")
+                cell.fill = pale_orange_fill
+                wb.save(excel_file)
+                break
+
+def notify_student(group, student_name, task_number, verdict):
+    for chat_id, data in user_state.items():
+        if data.get("group") == group and data.get("name") == student_name:
+            bot.send_message(chat_id, f"Ваша задача {task_number} получила оценку: {verdict}.")
+
+def move_submission_to_checked(group, student_name, task_number):
+    source_file = os.path.join(submissions_folder, f"{group}_{student_name}_task_{task_number}.pdf")
+    dest_file = os.path.join(checked_folder, f"{group}_{student_name}_task_{task_number}.pdf")
+    
+    if os.path.exists(source_file):
+        if os.path.exists(dest_file):
+            base, ext = os.path.splitext(dest_file)
+            counter = 1
+            new_dest_file = f"{base}_{counter}{ext}"
+            while os.path.exists(new_dest_file):
+                counter += 1
+                new_dest_file = f"{base}_{counter}{ext}"
+            dest_file = new_dest_file
+        
+        os.rename(source_file, dest_file)
+
 
 load_user_state()
 load_admin_codes()
